@@ -1,0 +1,1522 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <title>C.S Work Tracker — Industrial</title>
+
+  <!-- Core runtime (CDN). If something doesn't load, the app will show a friendly error. -->
+  <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+
+  <!-- Styling -->
+  <script src="https://cdn.tailwindcss.com"></script>
+
+  <!-- PDF engine (no html2canvas needed; we draw a designed invoice directly with jsPDF) -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          fontFamily: {
+            sans: ['ui-sans-serif','system-ui','-apple-system','Segoe UI','Roboto','Helvetica','Arial','Noto Sans','Apple Color Emoji','Segoe UI Emoji']
+          },
+          boxShadow: {
+            soft: "0 18px 60px rgba(0,0,0,0.45)",
+            glow: "0 0 0 1px rgba(255,255,255,0.08), 0 24px 80px rgba(0,0,0,0.55)"
+          },
+          keyframes: {
+            pageIn: { "0%": { opacity: 0, transform: "translateY(10px)" }, "100%": { opacity: 1, transform: "translateY(0px)" } },
+            modalIn: { "0%": { opacity: 0, transform: "translateY(10px) scale(0.98)" }, "100%": { opacity: 1, transform: "translateY(0px) scale(1)" } },
+            toastIn: { "0%": { opacity: 0, transform: "translateY(-10px)" }, "100%": { opacity: 1, transform: "translateY(0px)" } },
+            glowPulse: { "0%,100%": { boxShadow: "0 0 0 1px rgba(255,255,255,0.08), 0 24px 80px rgba(0,0,0,0.55)" }, "50%": { boxShadow: "0 0 0 1px rgba(251,191,36,0.35), 0 30px 100px rgba(0,0,0,0.65)" } }
+          },
+          animation: {
+            pageIn: "pageIn 420ms cubic-bezier(.22,1,.36,1)",
+            modalIn: "modalIn 220ms cubic-bezier(.22,1,.36,1)",
+            toastIn: "toastIn 220ms cubic-bezier(.22,1,.36,1)",
+            glowPulse: "glowPulse 2.4s ease-in-out infinite"
+          }
+        }
+      }
+    };
+  </script>
+
+  <style>
+    :root{
+      --bg0:#070a10;
+      --bg1:#0b1220;
+      --glass: rgba(255,255,255,0.06);
+      --stroke: rgba(255,255,255,0.10);
+      --stroke2: rgba(255,255,255,0.06);
+      --textDim: rgba(255,255,255,0.62);
+      --accent: #fbbf24;
+      --accent2: #f59e0b;
+      --danger: #fb7185;
+    }
+
+    html, body { height: 100%; background: var(--bg0); }
+    body { -webkit-tap-highlight-color: transparent; overscroll-behavior: none; }
+
+    /* Background: "industrial night" */
+    .bg-industrial{
+      position: relative;
+      min-height: 100vh;
+      background:
+        radial-gradient(1200px 900px at 20% -10%, rgba(245,158,11,0.18), transparent 55%),
+        radial-gradient(900px 700px at 85% 10%, rgba(56,189,248,0.10), transparent 60%),
+        radial-gradient(1000px 700px at 40% 110%, rgba(99,102,241,0.12), transparent 55%),
+        linear-gradient(180deg, var(--bg0), var(--bg1));
+      overflow-x: hidden;
+    }
+    .bg-industrial:before{
+      content:"";
+      position: fixed;
+      inset: 0;
+      pointer-events:none;
+      opacity: .25;
+      background-image:
+        radial-gradient(circle at 1px 1px, rgba(255,255,255,.08) 1px, transparent 0);
+      background-size: 18px 18px;
+      mix-blend-mode: overlay;
+      filter: blur(.2px);
+    }
+
+    /* Glass card */
+    .glass{
+      background: var(--glass);
+      border: 1px solid var(--stroke2);
+      box-shadow: 0 0 0 1px rgba(0,0,0,0.22) inset;
+      backdrop-filter: blur(18px);
+      -webkit-backdrop-filter: blur(18px);
+    }
+
+    /* Slight inner highlight at top (less "boxy") */
+    .glass-hi{
+      position: relative;
+      overflow: hidden;
+    }
+    .glass-hi:before{
+      content:"";
+      position:absolute;
+      inset:0;
+      pointer-events:none;
+      background:
+        linear-gradient(180deg, rgba(255,255,255,0.12), transparent 45%);
+      opacity: .65;
+    }
+
+    .hide-scroll::-webkit-scrollbar { display:none; }
+    .hide-scroll { scrollbar-width:none; -ms-overflow-style:none; }
+
+    /* Safer than relying on browser confirm() which can be blocked/overridden in some viewers */
+    .no-select { user-select: none; -webkit-user-select:none; }
+
+    /* Reduce jumpiness on mobile Chrome when address bar shows/hides */
+    .safe-vh { min-height: 100dvh; }
+
+    /* Simple motion without external libs */
+    .press { transform: translateZ(0); transition: transform 180ms cubic-bezier(.22,1,.36,1); }
+    .press:active { transform: scale(.985); }
+  </style>
+</head>
+
+<body class="text-white font-sans no-select">
+  <div id="root"></div>
+
+  <noscript>
+    <div style="padding:16px;color:white;background:black;font-family:system-ui">This app needs JavaScript enabled.</div>
+  </noscript>
+
+  <script type="text/babel">
+    const rootEl = document.getElementById("root");
+    if (!window.React || !window.ReactDOM) {
+      rootEl.innerHTML = `
+        <div style="padding:16px;font-family:system-ui;background:#000;color:#fff">
+          <div style="font-weight:800;font-size:18px">SCRIPT ERROR</div>
+          <div style="margin-top:8px;opacity:.75;font-size:14px">
+            React failed to load. Usually: no internet, CDN blocked, or a network filter.
+          </div>
+        </div>`;
+      throw new Error("React failed to load");
+    }
+    const { useEffect, useMemo, useRef, useState } = React;
+
+    // ----------------------------
+    // Data layer (LocalStorage)
+    // ----------------------------
+    const STORE_KEY = "cs_industrial_tracker_v5";
+
+    const deepClone = (x) => JSON.parse(JSON.stringify(x));
+
+    const defaultState = () => ({
+      rate: 50,
+      settings: {
+        motion: "premium", // "off" | "basic" | "premium"
+      },
+      logs: [],
+      payments: [],
+    });
+
+    const loadState = () => {
+      try {
+        const raw = localStorage.getItem(STORE_KEY);
+        if (!raw) return defaultState();
+        const parsed = JSON.parse(raw);
+
+        // minimal migrations/sanity
+        const s = { ...defaultState(), ...parsed };
+        s.rate = Number(s.rate || 50);
+        s.logs = Array.isArray(s.logs) ? s.logs : [];
+        s.payments = Array.isArray(s.payments) ? s.payments : [];
+        s.settings = { ...defaultState().settings, ...(s.settings || {}) };
+        return s;
+      } catch {
+        return defaultState();
+      }
+    };
+
+    const saveState = (s) => {
+      localStorage.setItem(STORE_KEY, JSON.stringify(s));
+    };
+
+    // ----------------------------
+    // Helpers
+    // ----------------------------
+    const pad2 = (n) => String(n).padStart(2, "0");
+    const nowISO = () => new Date().toISOString().slice(0,10);
+    const nowTime = () => {
+      const d = new Date();
+      return pad2(d.getHours()) + ":" + pad2(d.getMinutes());
+    };
+
+    const formatDateShort = (iso) => {
+      if (!iso) return "";
+      const [y,m,d] = iso.split("-");
+      return `${d}/${m}/${y.slice(-2)}`;
+    };
+
+    const formatCurrency = (n) => new Intl.NumberFormat("he-IL", {
+      style: "currency",
+      currency: "ILS",
+      minimumFractionDigits: 2,
+      maximumFractionDigits: 2
+    }).format(Number(n || 0));
+
+    const minutesBetween = (start, end) => {
+      // "HH:MM" -> minutes difference, supports overnight
+      if (!start || !end) return 0;
+      const [sH,sM] = start.split(":").map(Number);
+      const [eH,eM] = end.split(":").map(Number);
+      let s = sH*60 + sM;
+      let e = eH*60 + eM;
+      let diff = e - s;
+      if (diff < 0) diff += 1440;
+      return diff;
+    };
+
+    const calcHours = (timeIn, timeOut) => {
+      const mins = minutesBetween(timeIn, timeOut);
+      // keep 0.1h resolution (like your original)
+      return Math.round((mins/60)*10)/10;
+    };
+
+    const safeId = () => String(Date.now()) + "-" + String(Math.floor(Math.random()*1e6));
+
+    const csvEscape = (v) => {
+      if (v === null || v === undefined) return "";
+      const s = String(v);
+      if (/[",\n]/.test(s)) return `"${s.replace(/"/g,'""')}"`;
+      return s;
+    };
+
+    const downloadText = (filename, content, mime="text/plain") => {
+      const blob = new Blob([content], { type: mime });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 60000);
+    };
+
+    const shareOrDownloadBlob = async (filename, blob, title="") => {
+      try {
+        const file = new File([blob], filename, { type: blob.type || "application/octet-stream" });
+        if (navigator.canShare && navigator.canShare({ files: [file] })) {
+          await navigator.share({ files: [file], title: title || filename });
+          return true;
+        }
+      } catch {}
+      // fallback
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 60000);
+      return true;
+    };
+
+    // ----------------------------
+    // Inline Icons (no CDN)
+    // ----------------------------
+    const Icon = ({ name, size=22, className="" }) => {
+      const common = { width:size, height:size, viewBox:"0 0 24 24", fill:"none", stroke:"currentColor", strokeWidth:"2.2", strokeLinecap:"round", strokeLinejoin:"round" };
+      const icons = {
+        home: (<svg {...common} className={className}><path d="M3 10.5 12 3l9 7.5"/><path d="M5 10v10h14V10"/></svg>),
+        list: (<svg {...common} className={className}><path d="M8 6h13"/><path d="M3.5 6h.01"/><path d="M8 12h13"/><path d="M3.5 12h.01"/><path d="M8 18h13"/><path d="M3.5 18h.01"/></svg>),
+        report: (<svg {...common} className={className}><path d="M4 19V5a2 2 0 0 1 2-2h8l6 6v10a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2Z"/><path d="M14 3v6h6"/></svg>),
+        wallet: (<svg {...common} className={className}><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2h12"/><path d="M21 12h-6a2 2 0 1 0 0 4h6"/><path d="M17 3h-2"/></svg>),
+        gear: (<svg {...common} className={className}><path d="M12 15.5a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7Z"/><path d="M19.4 15a7.8 7.8 0 0 0 .1-1l2-1.5-2-3.5-2.4.7a7.8 7.8 0 0 0-.8-.5l-.4-2.5H10l-.4 2.5c-.3.1-.6.3-.9.5L6.3 9l-2 3.5 2 1.5a7.8 7.8 0 0 0 0 1L4.3 16.5l2 3.5 2.4-.7c.3.2.6.3.9.5l.4 2.5h4.1l.4-2.5c.3-.1.6-.3.9-.5l2.4.7 2-3.5-2-1.5Z"/></svg>),
+        plus: (<svg {...common} className={className}><path d="M12 5v14"/><path d="M5 12h14"/></svg>),
+        trash: (<svg {...common} className={className}><path d="M3 6h18"/><path d="M8 6V4h8v2"/><path d="M8 10v8"/><path d="M16 10v8"/><path d="M6 6l1 16h10l1-16"/></svg>),
+        clock: (<svg {...common} className={className}><path d="M12 21a9 9 0 1 0-9-9 9 9 0 0 0 9 9Z"/><path d="M12 7v6l4 2"/></svg>),
+        download: (<svg {...common} className={className}><path d="M12 3v12"/><path d="M7 10l5 5 5-5"/><path d="M5 21h14"/></svg>),
+        check: (<svg {...common} className={className}><path d="M20 6 9 17l-5-5"/></svg>),
+        x: (<svg {...common} className={className}><path d="M18 6 6 18"/><path d="M6 6l12 12"/></svg>),
+      };
+      return icons[name] || <span />;
+    };
+
+    // ----------------------------
+    // UI primitives
+    // ----------------------------
+    const Chip = ({ children, className="" }) => (
+      <div className={"glass px-4 py-2 rounded-2xl text-[10px] font-black uppercase tracking-[0.22em] " + className}>
+        {children}
+      </div>
+    );
+
+    const PrimaryButton = ({ children, className="", ...props }) => (
+      <button
+        {...props}
+        className={
+          "press w-full rounded-[999px] px-6 py-4 font-black uppercase tracking-[0.24em] text-[11px] " +
+          "bg-[#fbbf24] text-black shadow-soft " +
+          "disabled:opacity-50 disabled:active:scale-100 " + className
+        }
+      >
+        {children}
+      </button>
+    );
+
+    const GhostButton = ({ children, className="", ...props }) => (
+      <button
+        {...props}
+        className={
+          "press rounded-[999px] px-5 py-3 font-black uppercase tracking-[0.22em] text-[11px] " +
+          "glass text-white/90 border border-white/10 " +
+          "disabled:opacity-50 disabled:active:scale-100 " + className
+        }
+      >
+        {children}
+      </button>
+    );
+
+    const SmallButton = ({ children, className="", ...props }) => (
+      <button
+        {...props}
+        className={"press rounded-2xl px-4 py-2.5 text-[10px] font-black uppercase tracking-[0.22em] glass " + className}
+      >
+        {children}
+      </button>
+    );
+
+    const Toast = ({ toast, clear, motion }) => {
+      useEffect(() => {
+        if (!toast) return;
+        const t = setTimeout(clear, 2600);
+        return () => clearTimeout(t);
+      }, [toast]);
+
+      if (!toast) return null;
+      return (
+        <div className="fixed top-5 left-0 right-0 z-[200] flex justify-center px-4">
+          <div className={(motion !== "off" ? "animate-toastIn " : "") + " glass px-4 py-3 rounded-2xl shadow-soft border border-white/10 max-w-md w-full"}>
+            <div className="flex items-start gap-3">
+              <div className={"mt-0.5 " + (toast.type === "error" ? "text-rose-300" : "text-amber-300")}>
+                {toast.type === "error" ? "⚠" : "✓"}
+              </div>
+              <div className="text-[11px] font-bold text-white/90 leading-snug">{toast.msg}</div>
+            </div>
+          </div>
+        </div>
+      );
+    };
+
+    const Modal = ({ open, title, subtitle, children, onClose, motion }) => {
+      if (!open) return null;
+      return (
+        <div className="fixed inset-0 z-[300] flex items-end sm:items-center justify-center p-4">
+          <div className="absolute inset-0 bg-black/55" onClick={onClose}></div>
+          <div className={(motion !== "off" ? "animate-modalIn " : "") + " relative w-full max-w-md glass rounded-[2.5rem] shadow-glow overflow-hidden"}>
+            <div className="px-6 pt-6 pb-4 border-b border-white/10">
+              <div className="flex items-start justify-between gap-4">
+                <div>
+                  <div className="text-[10px] font-black uppercase tracking-[0.28em] text-white/40">{subtitle || "C.S Renovations"}</div>
+                  <div className="text-xl font-black tracking-tight mt-1">{title}</div>
+                </div>
+                <button className="press p-2 rounded-2xl glass" onClick={onClose} aria-label="Close">
+                  <Icon name="x" size={18} className="text-white/70" />
+                </button>
+              </div>
+            </div>
+            <div className="p-6">
+              {children}
+            </div>
+          </div>
+        </div>
+      );
+    };
+
+    const ConfirmModal = ({ open, title, msg, confirmText="Confirm", danger=false, onCancel, onConfirm, motion }) => (
+      <Modal open={open} title={title} subtitle="Confirmation" onClose={onCancel} motion={motion}>
+        <div className="text-[12px] text-white/75 leading-relaxed">{msg}</div>
+        <div className="mt-6 grid grid-cols-2 gap-3">
+          <GhostButton onClick={onCancel}>Cancel</GhostButton>
+          <button
+            onClick={onConfirm}
+            className={
+              "press rounded-[999px] px-6 py-4 font-black uppercase tracking-[0.24em] text-[11px] shadow-soft " +
+              (danger ? "bg-rose-500 text-white" : "bg-[#fbbf24] text-black")
+            }
+          >
+            {confirmText}
+          </button>
+        </div>
+      </Modal>
+    );
+
+    // ----------------------------
+    // PDF invoice generator (designed)
+    // ----------------------------
+    const makeInvoicePDF = async ({ company, rate, rangeStart, rangeEnd, rows, totalHours, total, invoiceId }) => {
+  try {
+    const { jsPDF } = window.jspdf || {};
+    if (!jsPDF) throw new Error("jsPDF not loaded");
+    const doc = new jsPDF({ orientation: "p", unit: "mm", format: "a4", compress: true });
+
+    // ---- PDF-safe formatting (avoid RTL/currency glyph issues) ----
+    const money = (n) => `${Number(n || 0).toFixed(2)} ILS`;
+    const dShort = (iso) => {
+      if (!iso) return "";
+      const [y, m, d] = iso.split("-");
+      return `${d}/${m}/${y.slice(-2)}`;
+    };
+    const now = new Date();
+    const issuedAt = now.toLocaleString("en-GB", { year:"numeric", month:"2-digit", day:"2-digit", hour:"2-digit", minute:"2-digit" });
+
+    doc.setProperties({
+      title: `Invoice ${invoiceId}`,
+      subject: `Work log invoice (${dShort(rangeStart)}-${dShort(rangeEnd)})`,
+      author: company || "Work Tracker"
+    });
+
+    const W = doc.internal.pageSize.getWidth();
+    const H = doc.internal.pageSize.getHeight();
+    const M = { l: 14, r: 14, t: 16, b: 14 };
+
+    // Brand palette (matches app)
+    const C = {
+      ink: [15, 23, 42],     // slate-900-ish
+      slate: [51, 65, 85],   // slate-700-ish
+      mist: [241, 245, 249], // slate-100-ish
+      line: [226, 232, 240], // slate-200-ish
+      accent: [245, 158, 11] // amber-500-ish
+    };
+
+    // Column layout
+    const x0 = M.l;
+    const xR = W - M.r;
+    const tableW = xR - x0;
+
+    const col = {
+      date: 26,
+      desc: tableW - (26 + 18 + 26 + 30),
+      hrs: 18,
+      rate: 26,
+      amt: 30
+    };
+
+    const x = {
+      date: x0,
+      desc: x0 + col.date,
+      hrs: x0 + col.date + col.desc,
+      rate: x0 + col.date + col.desc + col.hrs,
+      amt: x0 + col.date + col.desc + col.hrs + col.rate
+    };
+
+    const headerHeight = 26;
+    const infoHeight = 24;
+    const tableHeaderH = 10;
+
+    const drawTop = ({ compact = false } = {}) => {
+      // Top bar
+      doc.setFillColor(...C.ink);
+      doc.rect(0, 0, W, compact ? 14 : 22, "F");
+
+      // Accent strip
+      doc.setFillColor(...C.accent);
+      doc.rect(0, compact ? 14 : 22, W, 1.2, "F");
+
+      // Logo chip
+      doc.setFillColor(...C.accent);
+      doc.roundedRect(x0, compact ? 4 : 6, compact ? 10 : 12, compact ? 10 : 12, 3, 3, "F");
+      doc.setFont("helvetica", "bold");
+      doc.setTextColor(0, 0, 0);
+      doc.setFontSize(compact ? 8 : 10);
+      doc.text("CS", x0 + (compact ? 5 : 6), compact ? 11 : 14, { align: "center" });
+
+      // Company
+      doc.setTextColor(255, 255, 255);
+      doc.setFont("helvetica", "bold");
+      doc.setFontSize(compact ? 10 : 14);
+      doc.text((company || "C.S Renovations").toUpperCase(), x0 + (compact ? 14 : 16), compact ? 11 : 14);
+
+      // Invoice label
+      doc.setFontSize(compact ? 10 : 14);
+      doc.text("INVOICE", xR, compact ? 11 : 14, { align: "right" });
+
+      // Meta line
+      doc.setFont("helvetica", "normal");
+      doc.setFontSize(9);
+      doc.setTextColor(226, 232, 240);
+      doc.text(`Invoice ID: ${invoiceId}`, x0, compact ? 20 : 30);
+      doc.text(`Issued: ${issuedAt}`, xR, compact ? 20 : 30, { align: "right" });
+    };
+
+    const drawInfo = (y) => {
+      // Info card
+      doc.setFillColor(...C.mist);
+      doc.roundedRect(x0, y, tableW, infoHeight, 4, 4, "F");
+      doc.setDrawColor(...C.line);
+      doc.roundedRect(x0, y, tableW, infoHeight, 4, 4, "S");
+
+      doc.setFont("helvetica", "bold");
+      doc.setTextColor(...C.slate);
+      doc.setFontSize(9);
+      doc.text("PERIOD", x0 + 6, y + 8);
+      doc.text("RATE", x0 + tableW * 0.55, y + 8);
+
+      doc.setFont("helvetica", "bold");
+      doc.setTextColor(...C.ink);
+      doc.setFontSize(12);
+      doc.text(`${dShort(rangeStart)}  –  ${dShort(rangeEnd)}`, x0 + 6, y + 16);
+      doc.text(`${money(rate)} / HR`, x0 + tableW * 0.55, y + 16);
+
+      doc.setFont("helvetica", "normal");
+      doc.setFontSize(9);
+      doc.setTextColor(...C.slate);
+      doc.text(`Entries: ${rows.length}`, x0 + 6, y + 22);
+      doc.text(`Total Hours: ${Number(totalHours || 0).toFixed(1)}h`, x0 + tableW * 0.55, y + 22);
+    };
+
+    const drawTableHeader = (y) => {
+      doc.setFillColor(248, 250, 252);
+      doc.roundedRect(x0, y, tableW, tableHeaderH, 3, 3, "F");
+      doc.setDrawColor(...C.line);
+      doc.roundedRect(x0, y, tableW, tableHeaderH, 3, 3, "S");
+
+      doc.setFont("helvetica", "bold");
+      doc.setFontSize(9);
+      doc.setTextColor(...C.slate);
+      doc.text("DATE", x.date + 3, y + 6.7);
+      doc.text("DESCRIPTION", x.desc + 3, y + 6.7);
+      doc.text("HRS", x.hrs + col.hrs / 2, y + 6.7, { align: "center" });
+      doc.text("RATE", x.rate + col.rate / 2, y + 6.7, { align: "center" });
+      doc.text("AMOUNT", x.amt + col.amt - 3, y + 6.7, { align: "right" });
+    };
+
+    const drawTotals = (y) => {
+      const boxW = 86;
+      const boxH = 34;
+
+      // Totals card
+      doc.setFillColor(...C.ink);
+      doc.roundedRect(xR - boxW, y, boxW, boxH, 5, 5, "F");
+
+      // Accent stripe
+      doc.setFillColor(...C.accent);
+      doc.roundedRect(xR - boxW, y, boxW, 6, 5, 5, "F");
+
+      doc.setFont("helvetica", "bold");
+      doc.setFontSize(9);
+      doc.setTextColor(0, 0, 0);
+      doc.text("TOTAL DUE", xR - 8, y + 4.2, { align: "right" });
+
+      doc.setFont("helvetica", "normal");
+      doc.setFontSize(9);
+      doc.setTextColor(203, 213, 225);
+      doc.text("Subtotal", xR - boxW + 8, y + 14);
+      doc.text("Hours", xR - boxW + 8, y + 20);
+
+      doc.setFont("helvetica", "bold");
+      doc.setTextColor(255, 255, 255);
+      doc.text(money(total), xR - 8, y + 14, { align: "right" });
+      doc.text(`${Number(totalHours || 0).toFixed(1)}h`, xR - 8, y + 20, { align: "right" });
+
+      doc.setFontSize(15);
+      doc.setTextColor(...C.accent);
+      doc.text(money(total), xR - 8, y + 30, { align: "right" });
+
+      // Small note under totals
+      doc.setFont("helvetica", "normal");
+      doc.setFontSize(9);
+      doc.setTextColor(...C.slate);
+      doc.text("Terms: due on receipt. Digital invoice.", x0, y + boxH + 8);
+    };
+
+    // ---- Build pages ----
+    const rowsSafe = (rows || []).map(r => ({
+      date: r.date || "",
+      hours: Number(r.hours || 0),
+      amount: Number(r.amount || 0),
+      note: (r.note || "Labor").toString(),
+      timeIn: r.timeIn || "",
+      timeOut: r.timeOut || ""
+    }));
+
+    // First page header + info
+    drawTop({ compact: false });
+    let y = 36;
+    drawInfo(y);
+    y += infoHeight + 10;
+
+    drawTableHeader(y);
+    y += tableHeaderH + 2;
+
+    const rowPadY = 3.5;
+    const lineH = 4.2;
+    const maxDescW = col.desc - 6;
+
+    let zebra = false;
+
+    for (let i = 0; i < rowsSafe.length; i++) {
+      const r = rowsSafe[i];
+      const dateTxt = dShort(r.date);
+      const desc = r.note || "Labor";
+      const descLines = doc.splitTextToSize(desc, maxDescW);
+      const neededH = Math.max(12, rowPadY * 2 + descLines.length * lineH);
+
+      // Page break if not enough space (keep room for footer)
+      if (y + neededH > H - M.b - 30) {
+        doc.addPage();
+        drawTop({ compact: true });
+        y = 26;
+        drawTableHeader(y);
+        y += tableHeaderH + 2;
+      }
+
+      // Row container
+      doc.setFillColor(zebra ? 255 : 252, zebra ? 255 : 255, zebra ? 255 : 255);
+      doc.roundedRect(x0, y, tableW, neededH, 3, 3, "F");
+      doc.setDrawColor(...C.line);
+      doc.roundedRect(x0, y, tableW, neededH, 3, 3, "S");
+
+      // Cell text
+      doc.setFont("helvetica", "bold");
+      doc.setTextColor(...C.ink);
+      doc.setFontSize(10);
+      doc.text(dateTxt, x.date + 3, y + rowPadY + 4);
+
+      doc.setFont("helvetica", "normal");
+      doc.setFontSize(10);
+      doc.setTextColor(...C.slate);
+      doc.text(descLines, x.desc + 3, y + rowPadY + 4);
+
+      doc.setFont("helvetica", "bold");
+      doc.setTextColor(...C.ink);
+      doc.text(`${r.hours.toFixed(1)}`, x.hrs + col.hrs / 2, y + rowPadY + 4, { align: "center" });
+
+      doc.setFont("helvetica", "normal");
+      doc.setTextColor(...C.slate);
+      doc.text(money(rate), x.rate + col.rate / 2, y + rowPadY + 4, { align: "center" });
+
+      doc.setFont("helvetica", "bold");
+      doc.setTextColor(...C.ink);
+      doc.text(money(r.amount), x.amt + col.amt - 3, y + rowPadY + 4, { align: "right" });
+
+      y += neededH + 3;
+      zebra = !zebra;
+    }
+
+    // Totals (make sure it fits)
+    const totalsY = y + 2;
+    if (totalsY + 48 > H - M.b) {
+      doc.addPage();
+      drawTop({ compact: true });
+      y = 26;
+    }
+    drawTotals(y);
+
+    // Footer with page numbers
+    const pages = doc.getNumberOfPages();
+    for (let p = 1; p <= pages; p++) {
+      doc.setPage(p);
+      doc.setFont("helvetica", "normal");
+      doc.setFontSize(8);
+      doc.setTextColor(...C.slate);
+      doc.text(`Generated: ${issuedAt}`, x0, H - 8);
+      doc.text(`Page ${p} / ${pages}`, xR, H - 8, { align: "right" });
+    }
+
+    return doc.output("blob");
+  } catch (e) {
+    console.error(e);
+    throw e;
+  }
+};
+
+    // ----------------------------
+    // App
+    // ----------------------------
+    function App() {
+      // Hard fail message if CDN blocked
+      if (!window.React || !window.ReactDOM) {
+        return (
+          <div className="p-6 text-white">
+            <div className="text-xl font-black">Script Error</div>
+            <div className="mt-2 text-white/70 text-sm">React failed to load. This usually means no internet, CDN blocked, or a network filter.</div>
+          </div>
+        );
+      }
+
+      const [state, setState] = useState(loadState());
+      const [tab, setTab] = useState("home");
+
+      const motion = state.settings?.motion || "premium";
+
+      const [toast, setToast] = useState(null);
+
+      const [logModal, setLogModal] = useState({ open: false, mode: "new", id: null });
+      const [payModal, setPayModal] = useState(false);
+      const [confirm, setConfirm] = useState({ open: false });
+
+      const [logForm, setLogForm] = useState({ date: nowISO(), timeIn: "", timeOut: "", note: "", billed: false });
+      const [payForm, setPayForm] = useState({ date: nowISO(), amount: "", note: "" });
+
+      const [reportRange, setReportRange] = useState(() => {
+        const d = new Date();
+        const start = new Date(d.getFullYear(), d.getMonth(), 1).toISOString().slice(0,10);
+        return { start, end: nowISO() };
+      });
+      const [includeBilled, setIncludeBilled] = useState(true);
+
+      // Persist
+      useEffect(() => { saveState(state); }, [state]);
+
+      // Open shift
+      const openShift = useMemo(() => {
+        const logs = state.logs || [];
+        return logs.find(l => l.status === "open" || (l.timeIn && !l.timeOut));
+      }, [state.logs]);
+
+      // Derived stats
+      const stats = useMemo(() => {
+        const logs = state.logs || [];
+        const pays = state.payments || [];
+        const earned = logs.reduce((a,l) => a + (Number(l.amount)||0), 0);
+        const hours = logs.reduce((a,l) => a + (Number(l.hours)||0), 0);
+        const paid = pays.reduce((a,p) => a + (Number(p.amount)||0), 0);
+        return { earned, paid, owed: earned - paid, hours };
+      }, [state.logs, state.payments]);
+
+      // Report data
+      const reportRows = useMemo(() => {
+        const rows = (state.logs || [])
+          .filter(l => {
+            if (!l.date) return false;
+            if (l.date < reportRange.start || l.date > reportRange.end) return false;
+            if (l.status === "open" || !l.timeOut) return false;
+            if (!includeBilled && l.billed) return false;
+            return true;
+          })
+          .sort((a,b) => a.date.localeCompare(b.date));
+        return rows;
+      }, [state.logs, reportRange, includeBilled]);
+
+      const reportTotals = useMemo(() => {
+        const hours = reportRows.reduce((a,l) => a + (Number(l.hours)||0), 0);
+        const total = reportRows.reduce((a,l) => a + (Number(l.amount)||0), 0);
+        return { hours, total, count: reportRows.length };
+      }, [reportRows]);
+
+      const invoiceId = useMemo(() => {
+        const s = reportRange.start.replaceAll("-","");
+        const e = reportRange.end.replaceAll("-","");
+        return `CSR-${s}-${e}`;
+      }, [reportRange.start, reportRange.end]);
+
+      // Toast helper
+      const showToast = (msg, type="ok") => setToast({ msg, type });
+
+      // Actions: shift
+      const startShift = () => {
+        if (openShift) return;
+        const entry = {
+          id: safeId(),
+          date: nowISO(),
+          timeIn: nowTime(),
+          timeOut: "",
+          note: "",
+          hours: 0,
+          amount: 0,
+          status: "open",
+          billed: false,
+          createdAt: Date.now()
+        };
+        setState(s => ({ ...s, logs: [entry, ...(s.logs||[])] }));
+        showToast("Shift started");
+      };
+
+      const finishShift = () => {
+        if (!openShift) return;
+        const out = nowTime();
+        const hrs = calcHours(openShift.timeIn, out);
+        const amount = Math.round((hrs * Number(state.rate || 50)) * 100) / 100;
+        setState(s => ({
+          ...s,
+          logs: (s.logs||[]).map(l => l.id === openShift.id ? { ...l, timeOut: out, status: "closed", hours: hrs, amount } : l)
+        }));
+        showToast("Shift finished");
+      };
+
+      // Log editor
+      const openNewLog = () => {
+        setLogForm({ date: nowISO(), timeIn: "", timeOut: "", note: "", billed: false });
+        setLogModal({ open: true, mode: "new", id: null });
+      };
+
+      const openEditLog = (log) => {
+        setLogForm({
+          date: log.date || nowISO(),
+          timeIn: log.timeIn || "",
+          timeOut: log.timeOut || "",
+          note: log.note || "",
+          billed: !!log.billed
+        });
+        setLogModal({ open: true, mode: "edit", id: log.id });
+      };
+
+      const saveLog = (e) => {
+        e.preventDefault();
+        const timeIn = logForm.timeIn || "";
+        const timeOut = logForm.timeOut || "";
+        const hrs = (timeIn && timeOut) ? calcHours(timeIn, timeOut) : 0;
+        const amount = Math.round((hrs * Number(state.rate || 50)) * 100) / 100;
+
+        if (logModal.mode === "new") {
+          const entry = {
+            id: safeId(),
+            date: logForm.date,
+            timeIn,
+            timeOut,
+            note: (logForm.note || "").trim(),
+            hours: hrs,
+            amount,
+            status: timeOut ? "closed" : "open",
+            billed: !!logForm.billed,
+            createdAt: Date.now()
+          };
+          setState(s => ({ ...s, logs: [entry, ...(s.logs||[])] }));
+          showToast("Log saved");
+        } else {
+          setState(s => ({
+            ...s,
+            logs: (s.logs||[]).map(l => l.id === logModal.id ? {
+              ...l,
+              date: logForm.date,
+              timeIn,
+              timeOut,
+              note: (logForm.note || "").trim(),
+              hours: hrs,
+              amount,
+              status: timeOut ? "closed" : "open",
+              billed: !!logForm.billed
+            } : l)
+          }));
+          showToast("Log updated");
+        }
+
+        setLogModal({ open: false, mode: "new", id: null });
+      };
+
+      const requestDeleteLog = (id) => {
+        setConfirm({
+          open: true,
+          title: "Delete log?",
+          msg: "This will remove the log permanently.",
+          confirmText: "Delete",
+          danger: true,
+          onConfirm: () => {
+            setState(s => ({ ...s, logs: (s.logs||[]).filter(l => l.id !== id) }));
+            setConfirm({ open: false });
+            showToast("Deleted", "error");
+          }
+        });
+      };
+
+      // Payments
+      const openNewPayment = () => {
+        setPayForm({ date: nowISO(), amount: "", note: "" });
+        setPayModal(true);
+      };
+
+      const savePayment = (e) => {
+        e.preventDefault();
+        const amt = Number(payForm.amount || 0);
+        if (!amt) { showToast("Enter amount", "error"); return; }
+        const entry = { id: safeId(), date: payForm.date, amount: amt, note: (payForm.note||"").trim(), createdAt: Date.now() };
+        setState(s => ({ ...s, payments: [entry, ...(s.payments||[])] }));
+        setPayModal(false);
+        showToast("Payment added");
+      };
+
+      const requestDeletePayment = (id) => {
+        setConfirm({
+          open: true,
+          title: "Delete payment?",
+          msg: "This will remove the payment record.",
+          confirmText: "Delete",
+          danger: true,
+          onConfirm: () => {
+            setState(s => ({ ...s, payments: (s.payments||[]).filter(p => p.id !== id) }));
+            setConfirm({ open: false });
+            showToast("Deleted", "error");
+          }
+        });
+      };
+
+      // Reports actions
+      const markBilled = () => {
+        if (!reportRows.length) { showToast("No logs in range", "error"); return; }
+        setState(s => ({
+          ...s,
+          logs: (s.logs||[]).map(l => {
+            const inRange = l.date >= reportRange.start && l.date <= reportRange.end;
+            const eligible = inRange && l.status !== "open" && l.timeOut;
+            if (!eligible) return l;
+            return { ...l, billed: true };
+          })
+        }));
+        showToast("Marked as billed");
+      };
+
+      const exportCSV = () => {
+        if (!reportRows.length) { showToast("No logs in range", "error"); return; }
+        const headers = ["Date","In","Out","Hours","Rate(ILS)","Total(ILS)","Billed","Note"];
+        const lines = reportRows.map(l => ([
+          l.date, l.timeIn || "", l.timeOut || "", Number(l.hours||0).toFixed(1), Number(state.rate||50), Number(l.amount||0).toFixed(2), l.billed ? "YES" : "NO", l.note || ""
+        ].map(csvEscape).join(",")));
+        const csv = headers.join(",") + "\\n" + lines.join("\\n");
+        downloadText(`CS-Report-${reportRange.start}_${reportRange.end}.csv`, csv, "text/csv;charset=utf-8");
+        showToast("CSV exported");
+      };
+
+      const exportPDF = async () => {
+        try {
+          if (!reportRows.length) { showToast("No logs in range", "error"); return; }
+          const blob = await makeInvoicePDF({
+            company: "C.S Renovations",
+            rate: Number(state.rate || 50),
+            rangeStart: reportRange.start,
+            rangeEnd: reportRange.end,
+            rows: reportRows.map(r => ({ ...r })),
+            total: reportTotals.total,
+            invoiceId
+          });
+          const filename = `Invoice-${invoiceId}.pdf`;
+          await shareOrDownloadBlob(filename, blob, "C.S Renovations Invoice");
+          showToast("PDF ready");
+        } catch (e) {
+          console.error(e);
+          showToast("PDF failed. If you're offline, turn on internet and try again.", "error");
+        }
+      };
+
+      // Settings
+      const resetAllData = () => {
+        setConfirm({
+          open: true,
+          title: "Reset all data?",
+          msg: "This deletes logs, payments, and settings on this device. No undo.",
+          confirmText: "Reset",
+          danger: true,
+          onConfirm: () => {
+            localStorage.removeItem(STORE_KEY);
+            setState(loadState());
+            setConfirm({ open: false });
+            showToast("Data reset", "error");
+          }
+        });
+      };
+
+      const exportBackup = () => {
+        const backup = deepClone(state);
+        downloadText(`CS-Backup-${nowISO()}.json`, JSON.stringify(backup, null, 2), "application/json");
+        showToast("Backup exported");
+      };
+
+      const importBackup = async (file) => {
+        try {
+          const text = await file.text();
+          const obj = JSON.parse(text);
+          // validate minimal
+          if (!obj || typeof obj !== "object") throw new Error("Invalid file");
+          const next = { ...defaultState(), ...obj };
+          next.rate = Number(next.rate || 50);
+          next.logs = Array.isArray(next.logs) ? next.logs : [];
+          next.payments = Array.isArray(next.payments) ? next.payments : [];
+          next.settings = { ...defaultState().settings, ...(next.settings || {}) };
+          setState(next);
+          showToast("Backup imported");
+        } catch (e) {
+          showToast("Import failed", "error");
+        }
+      };
+
+      // Motion helpers
+      const pageAnim = motion === "off" ? "" : "animate-pageIn";
+      const navItems = [
+        { id:"home", label:"Home", icon:"home" },
+        { id:"logs", label:"Logs", icon:"list" },
+        { id:"report", label:"Report", icon:"report" },
+        { id:"pay", label:"Pay", icon:"wallet" },
+        { id:"set", label:"Set", icon:"gear" }
+      ];
+      const tabIndex = navItems.findIndex(x => x.id === tab);
+      const indicatorStyle = useMemo(() => {
+        const pct = tabIndex < 0 ? 0 : tabIndex;
+        // 5 tabs
+        return {
+          transform: `translateX(${pct * 100}%)`,
+          transition: motion === "off" ? "none" : "transform 520ms cubic-bezier(.22,1,.36,1)"
+        };
+      }, [tabIndex, motion]);
+
+      // ----------------------------
+      // Screens
+      // ----------------------------
+      const Header = () => (
+        <div className="px-5 pt-10 pb-5">
+          <div className="flex items-end justify-between gap-4">
+            <div>
+              <div className="text-[10px] font-black uppercase tracking-[0.42em] text-white/40">Industrial Tracker</div>
+              <div className="mt-2 text-4xl font-black tracking-[-0.04em] leading-none">
+                <span className="text-white">C.S</span><br/>
+                <span className="text-white">RENOVATIONS</span>
+              </div>
+            </div>
+            <div className="flex flex-col items-end gap-3">
+              <Chip className="rounded-[999px] px-5 py-3 shadow-soft">
+                {Number(state.rate||50).toFixed(2)} ILS/HR
+              </Chip>
+            </div>
+          </div>
+        </div>
+      );
+
+      const Card = ({ children, className="" }) => (
+        <div className={"glass glass-hi rounded-[2.75rem] shadow-glow border border-white/10 " + className}>
+          <div className="relative">{children}</div>
+        </div>
+      );
+
+      const StatCard = ({ label, value, accent=false }) => (
+        <Card className="p-6">
+          <div className="text-[10px] font-black uppercase tracking-[0.34em] text-white/35">{label}</div>
+          <div className={"mt-2 text-2xl font-black tracking-tight " + (accent ? "text-amber-300" : "text-white")}>{value}</div>
+        </Card>
+      );
+
+      const HomeScreen = () => (
+        <div className={pageAnim + " space-y-6 px-5 pb-32"}>
+          <Card className={(openShift ? "animate-glowPulse " : "") + " p-7"}>
+            <div className="flex items-start justify-between gap-4">
+              <div>
+                <div className="text-[10px] font-black uppercase tracking-[0.34em] text-white/35">Status</div>
+                <div className="mt-1 text-4xl font-black tracking-tight">{openShift ? "ON SHIFT" : "OFF DUTY"}</div>
+                {openShift ? (
+                  <div className="mt-1 text-[12px] font-bold text-white/60">Started {openShift.timeIn} • {formatDateShort(openShift.date)}</div>
+                ) : (
+                  <div className="mt-1 text-[12px] font-bold text-white/60">Ready • {new Date().toLocaleTimeString([], {hour:"2-digit", minute:"2-digit"})}</div>
+                )}
+              </div>
+              <div className="glass rounded-[2rem] px-5 py-4 border border-white/10">
+                <div className="text-[10px] font-black uppercase tracking-[0.34em] text-white/40">Rate</div>
+                <div className="mt-1 text-lg font-black text-amber-300">{formatCurrency(state.rate)}</div>
+              </div>
+            </div>
+
+            <div className="mt-6">
+              <PrimaryButton
+                onClick={openShift ? finishShift : startShift}
+              >
+                <div className="flex items-center justify-center gap-3">
+                  <span className="inline-flex items-center justify-center w-6 h-6 rounded-xl bg-black/20">
+                    <Icon name="clock" size={18} className="text-black" />
+                  </span>
+                  {openShift ? "Finish Shift" : "Start Shift"}
+                </div>
+              </PrimaryButton>
+            </div>
+          </Card>
+
+          <div className="grid grid-cols-2 gap-4">
+            <StatCard label="Earned" value={formatCurrency(stats.earned)} accent />
+            <StatCard label="Due" value={formatCurrency(stats.owed)} />
+            <StatCard label="Paid" value={formatCurrency(stats.paid)} />
+            <StatCard label="Hours" value={`${Number(stats.hours||0).toFixed(1)}h`} />
+          </div>
+
+          <div className="flex items-center justify-between pt-2">
+            <div className="text-[10px] font-black uppercase tracking-[0.42em] text-white/35">Recent Logs</div>
+            <SmallButton onClick={openNewLog} className="px-5 py-3">
+              <span className="inline-flex items-center gap-2">
+                <Icon name="plus" size={16} className="text-amber-300" />
+                New
+              </span>
+            </SmallButton>
+          </div>
+
+          {(state.logs||[]).slice(0,4).map(l => (
+            <div key={l.id} className="glass rounded-[2.5rem] p-6 border border-white/10 shadow-soft press" onClick={() => openEditLog(l)}>
+              <div className="flex items-start justify-between gap-4">
+                <div>
+                  <div className="text-[10px] font-black uppercase tracking-[0.34em] text-white/35">{formatDateShort(l.date)}</div>
+                  <div className="mt-1 text-lg font-black">{(l.note && l.note.trim()) ? l.note : "Labor"}</div>
+                  <div className="mt-1 text-[12px] font-bold text-white/50">{l.timeIn || "--:--"} — {l.timeOut || "…"} {l.billed ? " • BILLED" : ""}</div>
+                </div>
+                <div className="text-right">
+                  <div className="text-amber-300 text-xl font-black">{formatCurrency(l.amount)}</div>
+                  <div className="text-[11px] font-black text-white/35 uppercase tracking-[0.22em]">{Number(l.hours||0).toFixed(1)}h</div>
+                </div>
+              </div>
+              <div className="mt-4 flex justify-end">
+                <button className="press glass rounded-2xl px-4 py-2 text-[10px] font-black uppercase tracking-[0.22em] text-rose-200 border border-white/10"
+                  onClick={(e) => { e.stopPropagation(); requestDeleteLog(l.id); }}>
+                  <span className="inline-flex items-center gap-2"><Icon name="trash" size={14}/> Delete</span>
+                </button>
+              </div>
+            </div>
+          ))}
+
+          {(state.logs||[]).length === 0 && (
+            <div className="glass rounded-[2.75rem] p-10 text-center border border-white/10">
+              <div className="text-[10px] font-black uppercase tracking-[0.42em] text-white/35">No logs yet</div>
+              <div className="mt-2 text-[12px] font-bold text-white/60">Hit Start Shift or add a log manually.</div>
+            </div>
+          )}
+        </div>
+      );
+
+      const LogsScreen = () => (
+        <div className={pageAnim + " space-y-4 px-5 pb-32"}>
+          <div className="flex items-center justify-between">
+            <div>
+              <div className="text-[10px] font-black uppercase tracking-[0.42em] text-white/35">Work Logs</div>
+              <div className="text-xl font-black mt-1">All entries</div>
+            </div>
+            <SmallButton onClick={openNewLog} className="px-5 py-3">
+              <span className="inline-flex items-center gap-2"><Icon name="plus" size={16} className="text-amber-300"/> New</span>
+            </SmallButton>
+          </div>
+
+          {(state.logs||[]).map(l => (
+            <div key={l.id} className={"glass rounded-[2.5rem] p-6 border border-white/10 shadow-soft press " + (l.status==="open" ? "ring-1 ring-amber-300/30" : "")} onClick={() => openEditLog(l)}>
+              <div className="flex items-start justify-between gap-4">
+                <div className="min-w-0">
+                  <div className="text-[10px] font-black uppercase tracking-[0.34em] text-white/35">{formatDateShort(l.date)} {l.billed ? "• BILLED" : ""}</div>
+                  <div className="mt-1 text-lg font-black truncate">{(l.note && l.note.trim()) ? l.note : "Labor"}</div>
+                  <div className="mt-1 text-[12px] font-bold text-white/50">{l.timeIn || "--:--"} — {l.timeOut || "…"} {l.status==="open" ? "• OPEN" : ""}</div>
+                </div>
+                <div className="text-right">
+                  <div className="text-amber-300 text-xl font-black">{formatCurrency(l.amount)}</div>
+                  <div className="text-[11px] font-black text-white/35 uppercase tracking-[0.22em]">{Number(l.hours||0).toFixed(1)}h</div>
+                </div>
+              </div>
+
+              <div className="mt-4 flex items-center justify-between">
+                <div className="text-[10px] font-black uppercase tracking-[0.34em] text-white/30">{l.id.slice(-6)}</div>
+                <button className="press glass rounded-2xl px-4 py-2 text-[10px] font-black uppercase tracking-[0.22em] text-rose-200 border border-white/10"
+                  onClick={(e) => { e.stopPropagation(); requestDeleteLog(l.id); }}>
+                  <span className="inline-flex items-center gap-2"><Icon name="trash" size={14}/> Delete</span>
+                </button>
+              </div>
+            </div>
+          ))}
+        </div>
+      );
+
+      const ReportScreen = () => (
+        <div className={pageAnim + " space-y-6 px-5 pb-32"}>
+          <div>
+            <div className="text-[10px] font-black uppercase tracking-[0.42em] text-white/35">Report</div>
+            <div className="text-xl font-black mt-1">Invoice & exports</div>
+          </div>
+
+          <Card className="p-7">
+            <div className="flex items-start justify-between gap-4">
+              <div>
+                <div className="text-[10px] font-black uppercase tracking-[0.34em] text-white/35">Report Range</div>
+                <div className="mt-2 text-lg font-black">{formatDateShort(reportRange.start)} — {formatDateShort(reportRange.end)}</div>
+              </div>
+              <Chip className="rounded-[999px] px-5 py-3">{reportTotals.count} entries</Chip>
+            </div>
+
+            <div className="mt-6 grid grid-cols-2 gap-3">
+              <div className="glass rounded-[2rem] p-4 border border-white/10">
+                <div className="text-[10px] font-black uppercase tracking-[0.34em] text-white/35">Start</div>
+                <input type="date" value={reportRange.start} onChange={e=>setReportRange(r=>({...r, start:e.target.value}))}
+                  className="mt-2 w-full bg-transparent text-white font-black outline-none"/>
+              </div>
+              <div className="glass rounded-[2rem] p-4 border border-white/10">
+                <div className="text-[10px] font-black uppercase tracking-[0.34em] text-white/35">End</div>
+                <input type="date" value={reportRange.end} onChange={e=>setReportRange(r=>({...r, end:e.target.value}))}
+                  className="mt-2 w-full bg-transparent text-white font-black outline-none"/>
+              </div>
+            </div>
+
+            <label className="mt-4 flex items-center justify-between gap-3 glass rounded-[2rem] p-4 border border-white/10 press">
+              <div className="flex items-center gap-3">
+                <input type="checkbox" checked={includeBilled} onChange={e=>setIncludeBilled(e.target.checked)}
+                  className="w-5 h-5 accent-amber-400" />
+                <div className="text-[12px] font-bold text-white/75">Include billed logs</div>
+              </div>
+              <div className="text-[12px] font-black text-white/60">{Number(reportTotals.hours).toFixed(1)}h • {formatCurrency(reportTotals.total)}</div>
+            </label>
+
+            <div className="mt-5 grid grid-cols-2 gap-3">
+              <PrimaryButton onClick={exportPDF} className="py-4">
+                <div className="flex items-center justify-center gap-3">
+                  <Icon name="download" size={18} className="text-black" />
+                  PDF
+                </div>
+              </PrimaryButton>
+              <GhostButton onClick={exportCSV} className="py-4">
+                <div className="flex items-center justify-center gap-3">
+                  <Icon name="report" size={18} className="text-white/80" />
+                  CSV
+                </div>
+              </GhostButton>
+            </div>
+
+            <div className="mt-3">
+              <GhostButton onClick={markBilled} className="w-full py-4">
+                <div className="flex items-center justify-center gap-3">
+                  <Icon name="check" size={18} className="text-amber-300" />
+                  Mark these as billed
+                </div>
+              </GhostButton>
+            </div>
+          </Card>
+
+          <div className="pt-2">
+            <div className="text-[10px] font-black uppercase tracking-[0.42em] text-white/35 mb-3">Preview</div>
+            {reportRows.slice(0, 10).map(r => (
+              <div key={r.id} className="glass rounded-[2.5rem] p-6 border border-white/10 shadow-soft">
+                <div className="flex items-start justify-between gap-4">
+                  <div className="min-w-0">
+                    <div className="text-[10px] font-black uppercase tracking-[0.34em] text-white/35">{formatDateShort(r.date)} {r.billed ? "• BILLED" : ""}</div>
+                    <div className="mt-1 text-lg font-black truncate">{(r.note && r.note.trim()) ? r.note : "Labor"}</div>
+                    <div className="mt-1 text-[12px] font-bold text-white/50">{r.timeIn} — {r.timeOut}</div>
+                  </div>
+                  <div className="text-right">
+                    <div className="text-amber-300 text-xl font-black">{formatCurrency(r.amount)}</div>
+                    <div className="text-[11px] font-black text-white/35 uppercase tracking-[0.22em]">{Number(r.hours||0).toFixed(1)}h</div>
+                  </div>
+                </div>
+              </div>
+            ))}
+            {reportRows.length === 0 && (
+              <div className="glass rounded-[2.75rem] p-10 text-center border border-white/10">
+                <div className="text-[10px] font-black uppercase tracking-[0.42em] text-white/35">No closed shifts in range</div>
+                <div className="mt-2 text-[12px] font-bold text-white/60">Set the dates or finish a shift.</div>
+              </div>
+            )}
+          </div>
+        </div>
+      );
+
+      const PayScreen = () => (
+        <div className={pageAnim + " space-y-4 px-5 pb-32"}>
+          <div className="flex items-center justify-between">
+            <div>
+              <div className="text-[10px] font-black uppercase tracking-[0.42em] text-white/35">Payments</div>
+              <div className="text-xl font-black mt-1">Money received</div>
+            </div>
+            <SmallButton onClick={openNewPayment} className="px-5 py-3">
+              <span className="inline-flex items-center gap-2"><Icon name="plus" size={16} className="text-amber-300"/> New</span>
+            </SmallButton>
+          </div>
+
+          {(state.payments||[]).map(p => (
+            <div key={p.id} className="glass rounded-[2.5rem] p-6 border border-white/10 shadow-soft">
+              <div className="flex items-start justify-between gap-4">
+                <div className="min-w-0">
+                  <div className="text-[10px] font-black uppercase tracking-[0.34em] text-white/35">{formatDateShort(p.date)}</div>
+                  <div className="mt-1 text-lg font-black truncate">{p.note || "Payment"}</div>
+                </div>
+                <div className="text-right">
+                  <div className="text-emerald-300 text-xl font-black">{formatCurrency(p.amount)}</div>
+                </div>
+              </div>
+              <div className="mt-4 flex justify-end">
+                <button className="press glass rounded-2xl px-4 py-2 text-[10px] font-black uppercase tracking-[0.22em] text-rose-200 border border-white/10"
+                  onClick={() => requestDeletePayment(p.id)}>
+                  <span className="inline-flex items-center gap-2"><Icon name="trash" size={14}/> Delete</span>
+                </button>
+              </div>
+            </div>
+          ))}
+
+          {(state.payments||[]).length === 0 && (
+            <div className="glass rounded-[2.75rem] p-10 text-center border border-white/10">
+              <div className="text-[10px] font-black uppercase tracking-[0.42em] text-white/35">No payments yet</div>
+              <div className="mt-2 text-[12px] font-bold text-white/60">Add payments to track what's owed.</div>
+            </div>
+          )}
+        </div>
+      );
+
+      const SettingsScreen = () => (
+        <div className={pageAnim + " space-y-5 px-5 pb-32"}>
+          <div>
+            <div className="text-[10px] font-black uppercase tracking-[0.42em] text-white/35">Settings</div>
+            <div className="text-xl font-black mt-1">Rate, motion, data</div>
+          </div>
+
+          <Card className="p-7 space-y-5">
+            <div>
+              <div className="text-[10px] font-black uppercase tracking-[0.34em] text-white/35">Hourly rate (ILS)</div>
+              <input
+                type="number"
+                value={state.rate}
+                onChange={e => setState(s => ({ ...s, rate: Number(e.target.value || 0) }))}
+                className="mt-2 w-full bg-black/20 rounded-[2rem] px-5 py-4 text-white font-black outline-none border border-white/10"
+                placeholder="50"
+                inputMode="decimal"
+              />
+              <div className="mt-2 text-[12px] text-white/55 font-bold">Used for all amounts and invoice totals.</div>
+            </div>
+
+            <div className="glass rounded-[2.25rem] p-5 border border-white/10">
+              <div className="flex items-center justify-between gap-4">
+                <div>
+                  <div className="text-[10px] font-black uppercase tracking-[0.34em] text-white/35">Animations</div>
+                  <div className="mt-1 text-[12px] font-bold text-white/70">If the phone feels heavy, set it to Basic or Off.</div>
+                </div>
+                <select
+                  value={motion}
+                  onChange={e => setState(s => ({ ...s, settings: { ...(s.settings||{}), motion: e.target.value } }))}
+                  className="bg-black/20 rounded-2xl px-4 py-3 font-black text-[11px] uppercase tracking-[0.22em] border border-white/10 outline-none"
+                >
+                  <option value="premium">Premium</option>
+                  <option value="basic">Basic</option>
+                  <option value="off">Off</option>
+                </select>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-2 gap-3">
+              <GhostButton onClick={exportBackup} className="py-4">Export backup</GhostButton>
+              <label className="press glass rounded-[999px] px-6 py-4 font-black uppercase tracking-[0.24em] text-[11px] text-white/90 border border-white/10 text-center cursor-pointer">
+                Import backup
+                <input
+                  type="file"
+                  accept="application/json"
+                  className="hidden"
+                  onChange={(e) => {
+                    const f = e.target.files && e.target.files[0];
+                    e.target.value = "";
+                    if (f) importBackup(f);
+                  }}
+                />
+              </label>
+            </div>
+
+            <button onClick={resetAllData} className="press w-full rounded-[999px] px-6 py-4 font-black uppercase tracking-[0.24em] text-[11px] bg-rose-500 text-white shadow-soft">
+              Reset data
+            </button>
+          </Card>
+
+          <div className="glass rounded-[2.75rem] p-7 border border-white/10">
+            <div className="text-[10px] font-black uppercase tracking-[0.42em] text-white/35">Why I removed Framer Motion</div>
+            <div className="mt-2 text-[12px] font-bold text-white/70 leading-relaxed">
+              Framer Motion is great, but on a phone opening an HTML file it can fail to load (CDN blocked) or cause jank with blur effects.
+              This build uses tiny CSS animations instead: smoother, lighter, and works even if a library fails.
+            </div>
+          </div>
+        </div>
+      );
+
+      // ----------------------------
+      // Layout
+      // ----------------------------
+      return (
+        <div className="bg-industrial safe-vh max-w-md mx-auto relative">
+          <Toast toast={toast} clear={() => setToast(null)} motion={motion} />
+
+          <Header />
+
+          <main className="hide-scroll overflow-y-auto">
+            {tab === "home" && <HomeScreen />}
+            {tab === "logs" && <LogsScreen />}
+            {tab === "report" && <ReportScreen />}
+            {tab === "pay" && <PayScreen />}
+            {tab === "set" && <SettingsScreen />}
+          </main>
+
+          {/* Bottom Nav */}
+          <div className="fixed bottom-6 left-0 right-0 flex justify-center px-5">
+            <div className="w-full max-w-md">
+              <div className="glass rounded-[2.75rem] shadow-glow border border-white/10 p-2 relative overflow-hidden">
+                {/* moving highlight */}
+                <div className="absolute inset-0 pointer-events-none">
+                  <div
+                    style={{
+                      width: "20%",
+                      ...indicatorStyle
+                    }}
+                    className="h-full"
+                  >
+                    <div className="h-full w-full rounded-[2.4rem] bg-white/6 border border-white/10"></div>
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-5 relative">
+                  {navItems.map((it) => {
+                    const active = tab === it.id;
+                    const activeColor = active ? "text-amber-300" : "text-white/35";
+                    const activeLift = (motion === "off") ? "" : (active ? "translate-y-[-2px]" : "translate-y-[0px]");
+                    const dur = (motion === "off") ? "" : "transition-all duration-[520ms]";
+                    return (
+                      <button
+                        key={it.id}
+                        onClick={() => setTab(it.id)}
+                        className={"press flex flex-col items-center justify-center gap-1 py-3 rounded-[2.4rem] " + dur + " " + activeColor + " " + activeLift}
+                      >
+                        <Icon name={it.icon} size={22} className={active ? "text-amber-300" : "text-white/40"} />
+                        <div className={"text-[9px] font-black uppercase tracking-[0.22em] " + (active ? "text-amber-300" : "text-white/35")}>{it.label}</div>
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            </div>
+          </div>
+
+          {/* Log modal */}
+          <Modal
+            open={logModal.open}
+            title={logModal.mode === "new" ? "New log" : "Edit log"}
+            subtitle="Work entry"
+            onClose={() => setLogModal({ open: false, mode: "new", id: null })}
+            motion={motion}
+          >
+            <form onSubmit={saveLog} className="space-y-4">
+              <div className="grid grid-cols-2 gap-3">
+                <div className="glass rounded-[2rem] p-4 border border-white/10">
+                  <div className="text-[10px] font-black uppercase tracking-[0.34em] text-white/35">Date</div>
+                  <input type="date" required value={logForm.date} onChange={e=>setLogForm(f=>({...f, date:e.target.value}))}
+                    className="mt-2 w-full bg-transparent text-white font-black outline-none"/>
+                </div>
+                <div className="glass rounded-[2rem] p-4 border border-white/10">
+                  <div className="text-[10px] font-black uppercase tracking-[0.34em] text-white/35">Billed</div>
+                  <label className="mt-3 flex items-center gap-3">
+                    <input type="checkbox" checked={logForm.billed} onChange={e=>setLogForm(f=>({...f, billed:e.target.checked}))}
+                      className="w-5 h-5 accent-amber-400" />
+                    <span className="text-[12px] font-bold text-white/70">Already billed</span>
+                  </label>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 gap-3">
+                <div className="glass rounded-[2rem] p-4 border border-white/10">
+                  <div className="text-[10px] font-black uppercase tracking-[0.34em] text-white/35">Time in</div>
+                  <input type="time" value={logForm.timeIn} onChange={e=>setLogForm(f=>({...f, timeIn:e.target.value}))}
+                    className="mt-2 w-full bg-transparent text-white font-black outline-none"/>
+                </div>
+                <div className="glass rounded-[2rem] p-4 border border-white/10">
+                  <div className="text-[10px] font-black uppercase tracking-[0.34em] text-white/35">Time out</div>
+                  <input type="time" value={logForm.timeOut} onChange={e=>setLogForm(f=>({...f, timeOut:e.target.value}))}
+                    className="mt-2 w-full bg-transparent text-white font-black outline-none"/>
+                </div>
+              </div>
+
+              <div className="glass rounded-[2.25rem] p-4 border border-white/10">
+                <div className="text-[10px] font-black uppercase tracking-[0.34em] text-white/35">Note</div>
+                <textarea
+                  rows="3"
+                  value={logForm.note}
+                  onChange={e=>setLogForm(f=>({...f, note:e.target.value}))}
+                  placeholder="What was done? (optional)"
+                  className="mt-2 w-full bg-transparent text-white/90 font-bold outline-none resize-none"
+                />
+              </div>
+
+              <PrimaryButton type="submit">
+                {logModal.mode === "new" ? "Save log" : "Save changes"}
+              </PrimaryButton>
+            </form>
+          </Modal>
+
+          {/* Payment modal */}
+          <Modal
+            open={payModal}
+            title="Add payment"
+            subtitle="Money received"
+            onClose={() => setPayModal(false)}
+            motion={motion}
+          >
+            <form onSubmit={savePayment} className="space-y-4">
+              <div className="glass rounded-[2rem] p-4 border border-white/10">
+                <div className="text-[10px] font-black uppercase tracking-[0.34em] text-white/35">Date</div>
+                <input type="date" required value={payForm.date} onChange={e=>setPayForm(f=>({...f, date:e.target.value}))}
+                  className="mt-2 w-full bg-transparent text-white font-black outline-none"/>
+              </div>
+
+              <div className="glass rounded-[2rem] p-4 border border-white/10">
+                <div className="text-[10px] font-black uppercase tracking-[0.34em] text-white/35">Amount (ILS)</div>
+                <input type="number" inputMode="decimal" required value={payForm.amount} onChange={e=>setPayForm(f=>({...f, amount:e.target.value}))}
+                  className="mt-2 w-full bg-transparent text-white font-black outline-none" placeholder="350"/>
+              </div>
+
+              <div className="glass rounded-[2.25rem] p-4 border border-white/10">
+                <div className="text-[10px] font-black uppercase tracking-[0.34em] text-white/35">Note</div>
+                <input type="text" value={payForm.note} onChange={e=>setPayForm(f=>({...f, note:e.target.value}))}
+                  className="mt-2 w-full bg-transparent text-white/90 font-bold outline-none" placeholder="Bank transfer"/>
+              </div>
+
+              <PrimaryButton type="submit">Add payment</PrimaryButton>
+            </form>
+          </Modal>
+
+          {/* Confirm modal */}
+          <ConfirmModal
+            open={confirm.open}
+            title={confirm.title || "Confirm"}
+            msg={confirm.msg || ""}
+            confirmText={confirm.confirmText || "Confirm"}
+            danger={!!confirm.danger}
+            onCancel={() => setConfirm({ open: false })}
+            onConfirm={() => confirm.onConfirm && confirm.onConfirm()}
+            motion={motion}
+          />
+        </div>
+      );
+    }
+
+    // Mount
+    const root = ReactDOM.createRoot(rootEl);
+    root.render(<App />);
+  </script>
+</body>
+</html>
